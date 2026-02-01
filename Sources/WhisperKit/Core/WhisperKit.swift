@@ -507,6 +507,77 @@ open class WhisperKit {
         Logging.info("Unloaded all models")
     }
 
+    // MARK: - Speculative Decoding (Assistant Model)
+
+    /// Loads an assistant (draft) model for speculative decoding
+    /// - Parameter modelName: The model name to load (e.g., "distil-large-v3")
+    /// - Note: The assistant model shares the main tokenizer but has its own decoder
+    open func loadAssistantModel(_ modelName: String) async throws {
+        guard modelState == .loaded else {
+            throw WhisperError.modelsUnavailable("Main model must be loaded before assistant model")
+        }
+
+        guard let mainDecoder = textDecoder as? TextDecoder else {
+            throw WhisperError.modelsUnavailable("TextDecoder not available")
+        }
+
+        Logging.info("Loading assistant model: \(modelName)")
+
+        // Download the assistant model if needed
+        let assistantModelFolder = try await Self.download(
+            variant: modelName,
+            downloadBase: nil,
+            useBackgroundSession: useBackgroundDownloadSession,
+            from: "argmaxinc/whisperkit-coreml"
+        )
+
+        // Load only the TextDecoder from the assistant model
+        let decoderUrl = ModelUtilities.detectModelURL(inFolder: assistantModelFolder, named: "TextDecoder")
+
+        guard FileManager.default.fileExists(atPath: decoderUrl.path) else {
+            throw WhisperError.modelsUnavailable("Assistant model decoder not found at \(decoderUrl.path)")
+        }
+
+        // Create and load the draft decoder
+        let draftDecoder = TextDecoder()
+        try await draftDecoder.loadModel(
+            at: decoderUrl,
+            computeUnits: modelCompute.textDecoderCompute,
+            prewarmMode: false
+        )
+
+        // Share the tokenizer with the draft decoder
+        draftDecoder.tokenizer = self.tokenizer
+
+        // Validate compatibility
+        guard mainDecoder.isModelMultilingual == draftDecoder.isModelMultilingual else {
+            throw WhisperError.modelsUnavailable("Language mode mismatch: main and draft model must both be multilingual or both be English-only")
+        }
+
+        // Set the draft decoder on the main text decoder
+        mainDecoder.setDraftDecoder(draftDecoder)
+        Logging.info("Assistant model loaded successfully for speculative decoding")
+    }
+
+    /// Unloads the assistant model to free memory
+    open func unloadAssistantModel() async {
+        if let mainDecoder = textDecoder as? TextDecoder {
+            if let draftDecoder = mainDecoder.draftDecoder {
+                draftDecoder.unloadModel()
+            }
+            mainDecoder.setDraftDecoder(nil)
+            Logging.info("Assistant model unloaded")
+        }
+    }
+
+    /// Check if assistant model is loaded and ready for speculative decoding
+    open var isAssistantModelLoaded: Bool {
+        if let mainDecoder = textDecoder as? TextDecoder {
+            return mainDecoder.isSpeculativeDecodingAvailable
+        }
+        return false
+    }
+
     open func clearState() {
         audioProcessor.stopRecording()
         currentTimings = TranscriptionTimings()
