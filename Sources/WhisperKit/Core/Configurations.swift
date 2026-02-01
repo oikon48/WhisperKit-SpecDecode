@@ -180,6 +180,20 @@ public struct DecodingOptions: Codable, Sendable {
     public var concurrentWorkerCount: Int
     public var chunkingStrategy: ChunkingStrategy?
 
+    // MARK: - Speculative Decoding Options
+
+    /// Enable speculative decoding for faster transcription
+    public var useSpeculativeDecoding: Bool
+
+    /// Model identifier for the assistant (draft) model used in speculative decoding
+    public var assistantModel: String?
+
+    /// Probability threshold for accepting draft tokens (0.0-1.0)
+    public var speculativeThreshold: Float
+
+    /// Maximum number of tokens to generate speculatively before verification
+    public var maxSpeculationLength: Int
+
     public init(
         verbose: Bool = false,
         task: DecodingTask = .transcribe,
@@ -208,7 +222,11 @@ public struct DecodingOptions: Codable, Sendable {
         firstTokenLogProbThreshold: Float? = -1.5,
         noSpeechThreshold: Float? = 0.6,
         concurrentWorkerCount: Int? = nil,
-        chunkingStrategy: ChunkingStrategy? = nil
+        chunkingStrategy: ChunkingStrategy? = nil,
+        useSpeculativeDecoding: Bool = false,
+        assistantModel: String? = nil,
+        speculativeThreshold: Float = 0.9,
+        maxSpeculationLength: Int = 8
     ) {
         self.verbose = verbose
         self.task = task
@@ -244,5 +262,9 @@ public struct DecodingOptions: Codable, Sendable {
         self.concurrentWorkerCount = concurrentWorkerCount ?? 4
         #endif
         self.chunkingStrategy = chunkingStrategy
+        self.useSpeculativeDecoding = useSpeculativeDecoding
+        self.assistantModel = assistantModel
+        self.speculativeThreshold = speculativeThreshold
+        self.maxSpeculationLength = maxSpeculationLength
     }
 }
