@@ -693,6 +693,143 @@ open class TextDecoder: TextDecoding, WhisperMLModel {
         return tokenExp / sumExp
     }
 
+    // MARK: - Speculative Decoding Coordinator
+
+    /// Result of a speculative decoding session
+    public struct SpeculativeDecodingResult {
+        /// All generated tokens
+        public let tokens: [Int]
+        /// Number of tokens accepted from draft model
+        public let acceptedCount: Int
+        /// Number of tokens corrected by main model
+        public let correctedCount: Int
+        /// Whether decoding completed (hit end token)
+        public let isComplete: Bool
+    }
+
+    /// Coordinate speculative decoding loop
+    /// - Parameters:
+    ///   - encoderOutput: The encoder output embeddings
+    ///   - initialInputs: Initial decoder inputs with context
+    ///   - options: Decoding options with speculative settings
+    ///   - maxTokens: Maximum total tokens to generate
+    /// - Returns: SpeculativeDecodingResult with generated tokens and statistics
+    /// - Throws: WhisperError if draft decoder is not available or cancellation
+    public func speculativeDecodeLoop(
+        encoderOutput: MLMultiArray,
+        initialInputs: DecodingInputs,
+        options: DecodingOptions,
+        maxTokens: Int = 448
+    ) async throws -> SpeculativeDecodingResult {
+        guard isSpeculativeDecodingAvailable else {
+            throw WhisperError.assistantModelNotLoaded()
+        }
+
+        var allTokens: [Int] = []
+        var acceptedCount = 0
+        var correctedCount = 0
+        var currentInputs = initialInputs
+        var isComplete = false
+
+        let threshold = options.speculativeThreshold
+        let maxSpecLength = options.maxSpeculationLength
+
+        while allTokens.count < maxTokens {
+            // Check for cancellation at loop start
+            try Task.checkCancellation()
+
+            // Step 1: Generate draft tokens
+            let draftTokens = try await draftDecode(
+                encoderOutput: encoderOutput,
+                decoderInputs: currentInputs,
+                maxLength: maxSpecLength,
+                options: options
+            )
+
+            if draftTokens.isEmpty {
+                // Draft model produced no tokens - fall back to single main model step
+                guard let output = try await predictLogits(
+                    inputIds: currentInputs.inputIds,
+                    cacheLength: currentInputs.cacheLength,
+                    keyCache: currentInputs.keyCache,
+                    valueCache: currentInputs.valueCache,
+                    kvCacheUpdateMask: currentInputs.kvCacheUpdateMask,
+                    encoderOutputEmbeds: encoderOutput,
+                    decoderKeyPaddingMask: currentInputs.decoderKeyPaddingMask
+                ), let logits = output.logits else {
+                    break
+                }
+
+                let token = greedySample(logits: logits)
+
+                // Check for end token
+                if let tokenizer = self.tokenizer, token == tokenizer.specialTokens.endToken {
+                    isComplete = true
+                    break
+                }
+
+                allTokens.append(token)
+                correctedCount += 1
+
+                // Update inputs
+                currentInputs.inputIds[0] = NSNumber(value: token)
+                let cacheLen = currentInputs.cacheLength[0].intValue
+                currentInputs.cacheLength[0] = NSNumber(value: cacheLen + 1)
+                continue
+            }
+
+            // Step 2: Verify draft tokens against main model
+            let verification = try await verifyTokens(
+                draftTokens: draftTokens,
+                encoderOutput: encoderOutput,
+                decoderInputs: currentInputs,
+                threshold: threshold
+            )
+
+            // Step 3: Add accepted tokens
+            for token in verification.accepted {
+                // Check for end token
+                if let tokenizer = self.tokenizer, token == tokenizer.specialTokens.endToken {
+                    isComplete = true
+                    break
+                }
+                allTokens.append(token)
+                acceptedCount += 1
+
+                // Update inputs
+                currentInputs.inputIds[0] = NSNumber(value: token)
+                let cacheLen = currentInputs.cacheLength[0].intValue
+                currentInputs.cacheLength[0] = NSNumber(value: cacheLen + 1)
+            }
+
+            if isComplete { break }
+
+            // Step 4: Add correction token if any
+            if let correction = verification.correction {
+                // Check for end token
+                if let tokenizer = self.tokenizer, correction == tokenizer.specialTokens.endToken {
+                    isComplete = true
+                    break
+                }
+
+                allTokens.append(correction)
+                correctedCount += 1
+
+                // Update inputs
+                currentInputs.inputIds[0] = NSNumber(value: correction)
+                let cacheLen = currentInputs.cacheLength[0].intValue
+                currentInputs.cacheLength[0] = NSNumber(value: cacheLen + 1)
+            }
+        }
+
+        return SpeculativeDecodingResult(
+            tokens: allTokens,
+            acceptedCount: acceptedCount,
+            correctedCount: correctedCount,
+            isComplete: isComplete
+        )
+    }
+
     public var supportsWordTimestamps: Bool {
         return ModelUtilities.getModelOutputDimention(model, named: "alignment_heads_weights", position: 0) != nil
     }
