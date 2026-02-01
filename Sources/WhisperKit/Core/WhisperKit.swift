@@ -546,6 +546,11 @@ open class WhisperKit {
             prewarmMode: false
         )
 
+        // Set isModelMultilingual based on logitsSize (same logic as main decoder)
+        if let logitsDim = draftDecoder.logitsSize {
+            draftDecoder.isModelMultilingual = ModelUtilities.isModelMultilingual(logitsDim: logitsDim)
+        }
+
         // Share the tokenizer with the draft decoder
         draftDecoder.tokenizer = self.tokenizer
 
