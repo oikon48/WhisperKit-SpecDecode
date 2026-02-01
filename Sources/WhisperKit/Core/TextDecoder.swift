@@ -491,7 +491,36 @@ open class TextDecoder: TextDecoding, WhisperMLModel {
     private let earlyStopActor = EarlyStopActor()
     private var languageLogitsFilter: LanguageLogitsFilter?
 
+    // MARK: - Speculative Decoding Infrastructure
+
+    /// Draft decoder for speculative decoding (smaller/faster model)
+    public var draftDecoder: TextDecoder?
+
+    /// Active transcription ID for reentrancy protection
+    public var activeTranscriptionId: UUID?
+
+    /// State manager for coordinating transcription modes
+    public var stateManager: TranscriptionStateManager?
+
     public init() {}
+
+    /// Initialize with speculative decoding support
+    /// - Parameter stateManager: Optional state manager for coordinated transcription
+    public convenience init(stateManager: TranscriptionStateManager?) {
+        self.init()
+        self.stateManager = stateManager
+    }
+
+    /// Set the draft decoder for speculative decoding
+    /// - Parameter decoder: The draft decoder (should be a smaller/faster model)
+    public func setDraftDecoder(_ decoder: TextDecoder?) {
+        self.draftDecoder = decoder
+    }
+
+    /// Check if speculative decoding is available
+    public var isSpeculativeDecodingAvailable: Bool {
+        return draftDecoder != nil && draftDecoder?.model != nil
+    }
 
     public var supportsWordTimestamps: Bool {
         return ModelUtilities.getModelOutputDimention(model, named: "alignment_heads_weights", position: 0) != nil
