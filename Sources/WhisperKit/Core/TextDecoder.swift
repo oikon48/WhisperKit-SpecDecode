@@ -1087,6 +1087,72 @@ open class TextDecoder: TextDecoding, WhisperMLModel {
         // Logits filters
         let logitsFilters = createLogitsFilters(options: options, prefilledIndex: prefilledIndex, initialPromptIndex: initialPromptIndex, tokenizer: tokenizer)
 
+        // MARK: Speculative Decoding Path
+        // Check if speculative decoding is enabled and available
+        if options.useSpeculativeDecoding && isSpeculativeDecodingAvailable {
+            guard let encoderMLArray = encoderOutput as? MLMultiArray,
+                  let decoderInputsCasted = decoderInputs as? DecodingInputs else {
+                throw WhisperError.prepareDecoderInputsFailed("Speculative decoding requires MLMultiArray inputs")
+            }
+
+            Logging.debug("Using speculative decoding with threshold \(options.speculativeThreshold)")
+
+            // Register transcription with state manager if available
+            let transcriptionId: UUID?
+            if let stateManager = self.stateManager {
+                transcriptionId = try await stateManager.beginTranscription(speculative: true)
+                self.activeTranscriptionId = transcriptionId
+            } else {
+                transcriptionId = nil
+            }
+
+            defer {
+                // End transcription on exit
+                if let id = transcriptionId, let stateManager = self.stateManager {
+                    Task {
+                        await stateManager.endTranscription(id: id)
+                    }
+                }
+                self.activeTranscriptionId = nil
+            }
+
+            do {
+                let result = try await speculativeDecodeLoop(
+                    encoderOutput: encoderMLArray,
+                    initialInputs: decoderInputsCasted,
+                    options: options,
+                    maxTokens: options.sampleLength
+                )
+
+                // Convert speculative result to DecodingResult
+                let allTokens = decoderInputsCasted.initialPrompt + result.tokens
+                let text = tokenizer.decode(tokens: result.tokens)
+
+                // Calculate log probabilities (simplified - using uniform for now)
+                let logProbs = Array(repeating: Float(0.0), count: allTokens.count)
+
+                Logging.debug("Speculative decoding completed: \(result.acceptedCount) accepted, \(result.correctedCount) corrected")
+
+                return DecodingResult(
+                    language: options.language ?? "en",
+                    languageProbs: [:],
+                    tokens: allTokens,
+                    tokenLogProbs: logProbs,
+                    text: text,
+                    avgLogProb: 0.0,
+                    noSpeechProb: 0.0,
+                    temperature: options.temperature,
+                    compressionRatio: 1.0,
+                    timings: timings
+                )
+            } catch is CancellationError {
+                throw WhisperError.transcriptionCancelled()
+            } catch {
+                Logging.debug("Speculative decoding failed: \(error), falling back to normal decoding")
+                // Fall through to normal decoding
+            }
+        }
+
         // MARK: Main loop
 
         let loopCount = min(options.sampleLength, Constants.maxTokenContext - 1)
