@@ -3,7 +3,6 @@
 
 import Foundation
 
-@frozen
 public enum WhisperError: Error, LocalizedError, Equatable {
     case tokenizerUnavailable(String = "Tokenizer is unavailable")
     case modelsUnavailable(String = "Models are unavailable")
@@ -18,6 +17,20 @@ public enum WhisperError: Error, LocalizedError, Equatable {
     case microphoneUnavailable(String = "No available microphone to record or stream")
     case initializationError(String = "Error initializing WhisperKit")
 
+    // MARK: - Speculative Decoding Errors
+
+    /// Assistant model for speculative decoding is not loaded
+    case assistantModelNotLoaded(String = "Assistant model is not loaded for speculative decoding")
+
+    /// A transcription is already in progress
+    case transcriptionInProgress(String = "A transcription is already in progress")
+
+    /// Transcription was cancelled
+    case transcriptionCancelled(String = "Transcription was cancelled")
+
+    /// Speculative decoding failed with underlying error
+    case speculativeDecodingFailed(String)
+
     public var errorDescription: String? {
         switch self {
         case let .tokenizerUnavailable(message),
@@ -31,7 +44,11 @@ public enum WhisperError: Error, LocalizedError, Equatable {
             let .transcriptionFailed(message),
             let .decodingFailed(message),
             let .microphoneUnavailable(message),
-            let .initializationError(message):
+            let .initializationError(message),
+            let .assistantModelNotLoaded(message),
+            let .transcriptionInProgress(message),
+            let .transcriptionCancelled(message),
+            let .speculativeDecodingFailed(message):
             Logging.error(message)
             return message
         }
